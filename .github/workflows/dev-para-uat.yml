@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      change_description:
+        description: "Describe what changed in this deployment (used as the commit message)"
+        required: true
+        type: string
 
 permissions:
   contents: write   # to commit the exported solution to main
@@ -68,6 +73,8 @@ jobs:
 
       - name: Commit to main
         # Commits made with GITHUB_TOKEN do not trigger new workflow runs, so there is no loop.
+        env:
+          CHANGE_DESCRIPTION: ${{ inputs.change_description }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -75,7 +82,10 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes in the solution; nothing to commit."
           else
-            git commit -m "Export ${SOLUTION_NAME} from Dev"
+            if [ -z "$CHANGE_DESCRIPTION" ]; then
+              CHANGE_DESCRIPTION="Export ${SOLUTION_NAME} from Dev"
+            fi
+            git commit -m "$CHANGE_DESCRIPTION"
             git pull --rebase origin main
             git push origin HEAD:main
           fi

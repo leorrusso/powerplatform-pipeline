@@ -23,9 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: dev
     env:
-      PAC_CLIENT_ID: ${{ secrets.PAC_CLIENT_ID }}
+      PAC_CLIENT_ID: ${{ vars.PAC_CLIENT_ID || secrets.PAC_CLIENT_ID }}
       PAC_CLIENT_SECRET: ${{ secrets.PAC_CLIENT_SECRET }}
-      PAC_TENANT_ID: ${{ secrets.PAC_TENANT_ID }}
+      PAC_TENANT_ID: ${{ vars.PAC_TENANT_ID || secrets.PAC_TENANT_ID }}
       PP_ENVIRONMENT_URL: ${{ vars.PP_DEV_URL }}
     steps:
       - name: Baixar o repositório
@@ -93,9 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: uat
     env:
-      PAC_CLIENT_ID: ${{ secrets.PAC_CLIENT_ID }}
+      PAC_CLIENT_ID: ${{ vars.PAC_CLIENT_ID || secrets.PAC_CLIENT_ID }}
       PAC_CLIENT_SECRET: ${{ secrets.PAC_CLIENT_SECRET }}
-      PAC_TENANT_ID: ${{ secrets.PAC_TENANT_ID }}
+      PAC_TENANT_ID: ${{ vars.PAC_TENANT_ID || secrets.PAC_TENANT_ID }}
       PP_ENVIRONMENT_URL: ${{ vars.PP_UAT_URL }}
     steps:
       - name: Baixar o pacote managed

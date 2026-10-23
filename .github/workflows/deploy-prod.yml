@@ -1,24 +1,24 @@
-# Deploy manual para Produção: importa no Prod o MESMO pacote managed que passou no UAT.
+# Manual Production deploy: imports into Prod the SAME managed package that passed in UAT.
 name: "Deploy Prod"
 
 on:
   workflow_dispatch:
     inputs:
       confirmacao:
-        description: "Digite PRODUCAO para confirmar o deploy"
+        description: "Type PRODUCAO to confirm the deployment"
         required: true
         type: string
 
 permissions:
   contents: read
-  actions: read   # para localizar e baixar o artefato da última execução do "Dev para UAT"
+  actions: read   # to find and download the artifact from the latest "Dev to UAT" run
 
 env:
   SOLUTION_NAME: ${{ vars.PP_SOLUTION_NAME || '<NOME_DA_SOLUCAO>' }}
 
 jobs:
   importar-prod:
-    name: "Importar no Prod"
+    name: "Import into Prod"
     if: inputs.confirmacao == 'PRODUCAO'
     runs-on: ubuntu-latest
     environment: production
@@ -29,18 +29,18 @@ jobs:
       PP_ENVIRONMENT_URL: ${{ vars.PP_PROD_URL }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Baixar o repositório
+      - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Localizar a última execução bem-sucedida do "Dev para UAT"
+      - name: Find latest successful "Dev to UAT" run
         id: uat
         run: |
           RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow dev-para-uat.yml \
             --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "Execução do UAT usada: ${RUN_ID:-nenhuma (vai reempacotar a partir de solutions/)}"
+          echo "UAT run used: ${RUN_ID:-none (will repack from solutions/)}"
 
-      - name: Baixar o pacote managed testado no UAT
+      - name: Download managed package tested in UAT
         if: steps.uat.outputs.run_id != ''
         uses: actions/download-artifact@v8
         with:
@@ -49,12 +49,12 @@ jobs:
           run-id: ${{ steps.uat.outputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: Instalar o Power Platform CLI (pac)
+      - name: Install Power Platform CLI (pac)
         uses: microsoft/powerplatform-actions/actions-install@v1
         with:
           add-tools-to-path: true
 
-      - name: Plano B - reempacotar o managed a partir de solutions/
+      - name: Fallback - repack managed from solutions/
         if: steps.uat.outputs.run_id == ''
         run: |
           mkdir -p pacote
@@ -63,7 +63,7 @@ jobs:
             --folder "solutions/${SOLUTION_NAME}" \
             --packagetype Managed
 
-      - name: Autenticar no Prod (service principal)
+      - name: Authenticate to Prod (service principal)
         run: |
           pac auth create --name prod \
             --applicationId "$PAC_CLIENT_ID" \
@@ -71,18 +71,18 @@ jobs:
             --tenant "$PAC_TENANT_ID" \
             --environment "$PP_ENVIRONMENT_URL"
 
-      - name: Importar o managed no Prod
+      - name: Import managed solution into Prod
         run: |
           pac solution import \
             --path "pacote/${SOLUTION_NAME}_managed.zip" \
             --async --activate-plugins \
             --max-async-wait-time 60
 
-      - name: Status no resumo do job
+      - name: Job summary status
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ ${SOLUTION_NAME} importada com sucesso no Prod ($PP_ENVIRONMENT_URL). Pacote da execução UAT: ${{ steps.uat.outputs.run_id || 'reempacotado de solutions/' }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ ${SOLUTION_NAME} successfully imported into Prod ($PP_ENVIRONMENT_URL). UAT run package: ${{ steps.uat.outputs.run_id || 'repacked from solutions/' }}" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ Falha no deploy de ${SOLUTION_NAME} no Prod. Veja os logs dos passos acima." >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ Deployment of ${SOLUTION_NAME} to Prod failed. See the step logs above." >> "$GITHUB_STEP_SUMMARY"
           fi

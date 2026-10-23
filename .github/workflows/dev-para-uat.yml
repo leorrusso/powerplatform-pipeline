@@ -1,5 +1,5 @@
-# Dev → Git → UAT: exporta a solução do Dev, versiona em solutions/ e importa o managed no UAT.
-name: "Dev para UAT"
+# Dev → Git → UAT: exports the solution from Dev, versions it in solutions/ and imports the managed package into UAT.
+name: "Dev to UAT"
 
 on:
   push:
@@ -7,19 +7,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # para commitar a solução exportada no main
+  contents: write   # to commit the exported solution to main
 
 concurrency:
   group: dev-para-uat
   cancel-in-progress: false
 
 env:
-  # Troque <NOME_DA_SOLUCAO> pelo nome ÚNICO da solução (ou crie a variável de repositório PP_SOLUTION_NAME).
+  # Replace <NOME_DA_SOLUCAO> with the solution UNIQUE name (or create the PP_SOLUTION_NAME repository variable).
   SOLUTION_NAME: ${{ vars.PP_SOLUTION_NAME || '<NOME_DA_SOLUCAO>' }}
 
 jobs:
   exportar-dev:
-    name: "1. Exportar do Dev e commitar"
+    name: "1. Export from Dev and commit"
     runs-on: ubuntu-latest
     environment: dev
     env:
@@ -28,15 +28,15 @@ jobs:
       PAC_TENANT_ID: ${{ vars.PAC_TENANT_ID || secrets.PAC_TENANT_ID }}
       PP_ENVIRONMENT_URL: ${{ vars.PP_DEV_URL }}
     steps:
-      - name: Baixar o repositório
+      - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Instalar o Power Platform CLI (pac)
+      - name: Install Power Platform CLI (pac)
         uses: microsoft/powerplatform-actions/actions-install@v1
         with:
           add-tools-to-path: true
 
-      - name: Autenticar no Dev (service principal)
+      - name: Authenticate to Dev (service principal)
         run: |
           pac auth create --name dev \
             --applicationId "$PAC_CLIENT_ID" \
@@ -44,13 +44,13 @@ jobs:
             --tenant "$PAC_TENANT_ID" \
             --environment "$PP_ENVIRONMENT_URL"
 
-      - name: Exportar a solução (unmanaged e managed)
+      - name: Export solution (unmanaged and managed)
         run: |
           mkdir -p out
           pac solution export --name "$SOLUTION_NAME" --path "out/${SOLUTION_NAME}.zip" --overwrite --async
           pac solution export --name "$SOLUTION_NAME" --path "out/${SOLUTION_NAME}_managed.zip" --managed --overwrite --async
 
-      - name: Fazer unpack em solutions/<NOME_DA_SOLUCAO>/
+      - name: Unpack into solutions/<solution-name>/
         run: |
           pac solution unpack \
             --zipfile "out/${SOLUTION_NAME}.zip" \
@@ -58,7 +58,7 @@ jobs:
             --packagetype Both \
             --allowDelete --allowWrite --clobber
 
-      - name: Checagem básica (reempacotar o managed a partir do Git)
+      - name: Sanity check (repack managed from Git)
         run: |
           mkdir -p out/checagem
           pac solution pack \
@@ -66,21 +66,21 @@ jobs:
             --folder "solutions/${SOLUTION_NAME}" \
             --packagetype Managed
 
-      - name: Commitar no main
-        # Commit feito com GITHUB_TOKEN não dispara novos workflows, então não há loop.
+      - name: Commit to main
+        # Commits made with GITHUB_TOKEN do not trigger new workflow runs, so there is no loop.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "solutions/${SOLUTION_NAME}"
           if git diff --cached --quiet; then
-            echo "Sem alterações na solução; nada para commitar."
+            echo "No changes in the solution; nothing to commit."
           else
-            git commit -m "Exportação de ${SOLUTION_NAME} a partir do Dev"
+            git commit -m "Export ${SOLUTION_NAME} from Dev"
             git pull --rebase origin main
             git push origin HEAD:main
           fi
 
-      - name: Publicar o pacote managed como artefato
+      - name: Upload managed package as artifact
         uses: actions/upload-artifact@v7
         with:
           name: pacote-managed
@@ -88,7 +88,7 @@ jobs:
           if-no-files-found: error
 
   importar-uat:
-    name: "2. Importar no UAT"
+    name: "2. Import into UAT"
     needs: exportar-dev
     runs-on: ubuntu-latest
     environment: uat
@@ -98,18 +98,18 @@ jobs:
       PAC_TENANT_ID: ${{ vars.PAC_TENANT_ID || secrets.PAC_TENANT_ID }}
       PP_ENVIRONMENT_URL: ${{ vars.PP_UAT_URL }}
     steps:
-      - name: Baixar o pacote managed
+      - name: Download managed package
         uses: actions/download-artifact@v8
         with:
           name: pacote-managed
           path: pacote
 
-      - name: Instalar o Power Platform CLI (pac)
+      - name: Install Power Platform CLI (pac)
         uses: microsoft/powerplatform-actions/actions-install@v1
         with:
           add-tools-to-path: true
 
-      - name: Autenticar no UAT (service principal)
+      - name: Authenticate to UAT (service principal)
         run: |
           pac auth create --name uat \
             --applicationId "$PAC_CLIENT_ID" \
@@ -117,12 +117,12 @@ jobs:
             --tenant "$PAC_TENANT_ID" \
             --environment "$PP_ENVIRONMENT_URL"
 
-      - name: Importar o managed no UAT
+      - name: Import managed solution into UAT
         run: |
           pac solution import \
             --path "pacote/${SOLUTION_NAME}_managed.zip" \
             --async --activate-plugins \
             --max-async-wait-time 60
 
-      - name: Resumo
-        run: echo "✅ ${SOLUTION_NAME} importada no UAT ($PP_ENVIRONMENT_URL)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Summary
+        run: echo "✅ ${SOLUTION_NAME} imported into UAT ($PP_ENVIRONMENT_URL)." >> "$GITHUB_STEP_SUMMARY"

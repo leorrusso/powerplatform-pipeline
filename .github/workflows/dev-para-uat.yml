@@ -1,128 +1,70 @@
-# Dev → Git → UAT: exporta a solução do Dev, versiona em solutions/ e importa o managed no UAT.
-name: "Dev para UAT"
+# Pipeline Power Platform: Dev â†’ UAT â†’ Prod com GitHub Actions
 
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+- **`dev-para-uat.yml`** (push no `main` ou manual): exporta a soluÃ§Ã£o do Dev (unmanaged + managed), faz unpack em `solutions/<NOME_DA_SOLUCAO>/`, commita, reempacota como checagem bÃ¡sica e importa o managed no UAT. O commit Ã© feito com `GITHUB_TOKEN`, que nÃ£o dispara novos workflows, entÃ£o nÃ£o hÃ¡ loop.
+- **`deploy-prod.yml`** (somente manual): pede a confirmaÃ§Ã£o `PRODUCAO`, baixa o pacote managed da Ãºltima execuÃ§Ã£o bem-sucedida do UAT (o mesmo pacote testado) e importa no Prod. Se nÃ£o houver execuÃ§Ã£o, reempacota a partir de `solutions/`.
 
-permissions:
-  contents: write   # para commitar a solução exportada no main
+Troque `<NOME_DA_SOLUCAO>` pelo nome **Ãºnico** da soluÃ§Ã£o (ou crie a variÃ¡vel de repositÃ³rio `PP_SOLUTION_NAME`).
 
-concurrency:
-  group: dev-para-uat
-  cancel-in-progress: false
+## 1. Service principal (uma vez)
 
-env:
-  # Troque <NOME_DA_SOLUCAO> pelo nome ÚNICO da solução (ou crie a variável de repositório PP_SOLUTION_NAME).
-  SOLUTION_NAME: ${{ vars.PP_SOLUTION_NAME || '<NOME_DA_SOLUCAO>' }}
+**OpÃ§Ã£o A, com Azure CLI:**
+```bash
+az login
+APP_ID=$(az ad app create --display-name "sp-powerplatform-github" --query appId -o tsv)
+az ad sp create --id "$APP_ID"
+az ad app credential reset --id "$APP_ID" --display-name "github-actions" --years 1 --query password -o tsv   # = PAC_CLIENT_SECRET (guarde!)
+az account show --query tenantId -o tsv                                                                       # = PAC_TENANT_ID
+echo "$APP_ID"                                                                                                # = PAC_CLIENT_ID
+```
 
-jobs:
-  exportar-dev:
-    name: "1. Exportar do Dev e commitar"
-    runs-on: ubuntu-latest
-    environment: dev
-    env:
-      PAC_CLIENT_ID: ${{ secrets.PAC_CLIENT_ID }}
-      PAC_CLIENT_SECRET: ${{ secrets.PAC_CLIENT_SECRET }}
-      PAC_TENANT_ID: ${{ secrets.PAC_TENANT_ID }}
-      PP_ENVIRONMENT_URL: ${{ vars.PP_ENVIRONMENT_URL }}
-    steps:
-      - name: Baixar o repositório
-        uses: actions/checkout@v7
+**OpÃ§Ã£o B, com pac (cria o app no Entra ID e o usuÃ¡rio de aplicativo no Dev de uma vez; mostra o Client Secret na tela):**
+```bash
+pac auth create                      # login interativo com um admin
+pac admin create-service-principal --environment <URL_DEV>
+```
 
-      - name: Instalar o Power Platform CLI (pac)
-        uses: microsoft/powerplatform-actions/actions-install@v1
-        with:
-          add-tools-to-path: true
+**Registrar como usuÃ¡rio de aplicativo em cada ambiente** (faÃ§a para Dev, UAT e Prod; na opÃ§Ã£o B o Dev jÃ¡ estÃ¡ feito). VocÃª tambÃ©m pode fazer isso pelo Power Platform admin center â†’ Ambiente â†’ ConfiguraÃ§Ãµes â†’ UsuÃ¡rios + permissÃµes â†’ UsuÃ¡rios de aplicativo.
+```bash
+pac admin assign-user --environment <URL_DEV>  --user <APP_ID> --role "System Administrator" --application-user
+pac admin assign-user --environment <URL_UAT>  --user <APP_ID> --role "System Administrator" --application-user
+pac admin assign-user --environment <URL_PROD> --user <APP_ID> --role "System Administrator" --application-user
+```
 
-      - name: Autenticar no Dev (service principal)
-        run: |
-          pac auth create --name dev \
-            --applicationId "$PAC_CLIENT_ID" \
-            --clientSecret "$PAC_CLIENT_SECRET" \
-            --tenant "$PAC_TENANT_ID" \
-            --environment "$PP_ENVIRONMENT_URL"
+## 2. GitHub: environments, secrets e variÃ¡veis
 
-      - name: Exportar a solução (unmanaged e managed)
-        run: |
-          mkdir -p out
-          pac solution export --name "$SOLUTION_NAME" --path "out/${SOLUTION_NAME}.zip" --overwrite --async
-          pac solution export --name "$SOLUTION_NAME" --path "out/${SOLUTION_NAME}_managed.zip" --managed --overwrite --async
+Crie os environments `dev`, `uat` e `production`, cada um com os secrets `PAC_CLIENT_ID`, `PAC_CLIENT_SECRET` e `PAC_TENANT_ID`. Se for usar o mesmo SP em tudo, repita os mesmos valores.
 
-      - name: Fazer unpack em solutions/<NOME_DA_SOLUCAO>/
-        run: |
-          pac solution unpack \
-            --zipfile "out/${SOLUTION_NAME}.zip" \
-            --folder "solutions/${SOLUTION_NAME}" \
-            --packagetype Both \
-            --allowDelete --allowWrite --clobber
+As URLs dos ambientes nÃ£o sÃ£o sensÃ­veis, entÃ£o ficam em **variÃ¡veis de repositÃ³rio**, nÃ£o em secrets. VÃ¡ em **Settings â†’ Secrets and variables â†’ Actions â†’ aba Variables â†’ New repository variable** e crie:
 
-      - name: Checagem básica (reempacotar o managed a partir do Git)
-        run: |
-          mkdir -p out/checagem
-          pac solution pack \
-            --zipfile "out/checagem/${SOLUTION_NAME}_managed.zip" \
-            --folder "solutions/${SOLUTION_NAME}" \
-            --packagetype Managed
+| VariÃ¡vel | Valor |
+|---|---|
+| `PP_DEV_URL` | URL do ambiente Dev (ex.: `https://org-dev.crm2.dynamics.com`) |
+| `PP_UAT_URL` | URL do ambiente UAT |
+| `PP_PROD_URL` | URL do ambiente Prod |
+| `PP_SOLUTION_NAME` | nome Ãºnico da soluÃ§Ã£o |
+```bash
+REPO=<OWNER>/<REPO>
+gh variable set PP_SOLUTION_NAME --repo $REPO --body "<NOME_DA_SOLUCAO>"
 
-      - name: Commitar no main
-        # Commit feito com GITHUB_TOKEN não dispara novos workflows, então não há loop.
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "solutions/${SOLUTION_NAME}"
-          if git diff --cached --quiet; then
-            echo "Sem alterações na solução; nada para commitar."
-          else
-            git commit -m "Exportação de ${SOLUTION_NAME} a partir do Dev"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          fi
+for ENV in dev uat production; do
+  gh api --method PUT repos/$REPO/environments/$ENV
+  gh secret set PAC_CLIENT_ID     --repo $REPO --env $ENV --body "<APP_ID>"
+  gh secret set PAC_CLIENT_SECRET --repo $REPO --env $ENV   # cole o valor quando pedir (nÃ£o fica no histÃ³rico)
+  gh secret set PAC_TENANT_ID     --repo $REPO --env $ENV --body "<TENANT_ID>"
+done
+gh variable set PP_DEV_URL  --repo $REPO --body "<URL_DEV>"
+gh variable set PP_UAT_URL  --repo $REPO --body "<URL_UAT>"
+gh variable set PP_PROD_URL --repo $REPO --body "<URL_PROD>"
+```
 
-      - name: Publicar o pacote managed como artefato
-        uses: actions/upload-artifact@v7
-        with:
-          name: pacote-managed
-          path: out/${{ env.SOLUTION_NAME }}_managed.zip
-          if-no-files-found: error
+**Connection references:** as conexÃµes precisam existir no ambiente de destino. Se a soluÃ§Ã£o tiver connection references ou variÃ¡veis de ambiente, gere um settings file com `pac solution create-settings --solution-zip <zip> --settings-file <arquivo>.json` e passe `--settings-file` no `pac solution import`.
 
-  importar-uat:
-    name: "2. Importar no UAT"
-    needs: exportar-dev
-    runs-on: ubuntu-latest
-    environment: uat
-    env:
-      PAC_CLIENT_ID: ${{ secrets.PAC_CLIENT_ID }}
-      PAC_CLIENT_SECRET: ${{ secrets.PAC_CLIENT_SECRET }}
-      PAC_TENANT_ID: ${{ secrets.PAC_TENANT_ID }}
-      PP_ENVIRONMENT_URL: ${{ vars.PP_ENVIRONMENT_URL }}
-    steps:
-      - name: Baixar o pacote managed
-        uses: actions/download-artifact@v8
-        with:
-          name: pacote-managed
-          path: pacote
+**Repo pÃºblico:** os logs das execuÃ§Ãµes sÃ£o pÃºblicos. Os secrets ficam mascarados, mas nunca dÃª `echo` em valores sensÃ­veis.
 
-      - name: Instalar o Power Platform CLI (pac)
-        uses: microsoft/powerplatform-actions/actions-install@v1
-        with:
-          add-tools-to-path: true
+## 3. Roteiro da demo (3 passos)
 
-      - name: Autenticar no UAT (service principal)
-        run: |
-          pac auth create --name uat \
-            --applicationId "$PAC_CLIENT_ID" \
-            --clientSecret "$PAC_CLIENT_SECRET" \
-            --tenant "$PAC_TENANT_ID" \
-            --environment "$PP_ENVIRONMENT_URL"
+1. **Push â†’ UAT verde:** faÃ§a uma alteraÃ§Ã£o na soluÃ§Ã£o no Dev e um push (ou merge) no `main`. Mostre o "Dev para UAT" exportando, commitando em `solutions/` e importando no UAT.
+2. **Deploy Prod manual:** em Actions â†’ "Deploy Prod" â†’ *Run workflow*, digite `PRODUCAO`. Esse Ã© o momento da aprovaÃ§Ã£o.
+3. **Import concluÃ­do no Prod:** acompanhe o job e mostre o resumo âœ… e a soluÃ§Ã£o, com a versÃ£o nova, em make.powerapps.com no Prod.
 
-      - name: Importar o managed no UAT
-        run: |
-          pac solution import \
-            --path "pacote/${SOLUTION_NAME}_managed.zip" \
-            --async --activate-plugins \
-            --max-async-wait-time 60
-
-      - name: Resumo
-        run: echo "✅ ${SOLUTION_NAME} importada no UAT ($PP_ENVIRONMENT_URL)." >> "$GITHUB_STEP_SUMMARY"
+**Plano B:** rode tudo hoje Ã  noite e, se a demo ao vivo falhar, mostre essas execuÃ§Ãµes jÃ¡ concluÃ­das (logs, artefato `pacote-managed` e resumo).

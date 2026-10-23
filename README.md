@@ -1,70 +1,73 @@
-# Pipeline Power Platform: Dev → UAT → Prod com GitHub Actions
+# Power Platform pipeline: Dev → UAT → Prod with GitHub Actions
 
-- **`dev-para-uat.yml`** (push no `main` ou manual): exporta a solução do Dev (unmanaged + managed), faz unpack em `solutions/<NOME_DA_SOLUCAO>/`, commita, reempacota como checagem básica e importa o managed no UAT. O commit é feito com `GITHUB_TOKEN`, que não dispara novos workflows, então não há loop.
-- **`deploy-prod.yml`** (somente manual): pede a confirmação `PRODUCAO`, baixa o pacote managed da última execução bem-sucedida do UAT (o mesmo pacote testado) e importa no Prod. Se não houver execução, reempacota a partir de `solutions/`.
+- **`dev-para-uat.yml`** ("Dev to UAT", on push to `main` or manual): exports the solution from Dev (unmanaged + managed), unpacks it into `solutions/<solution-name>/`, commits it, repacks it as a sanity check and imports the managed package into UAT. The commit is made with `GITHUB_TOKEN`, which does not trigger new workflow runs, so there is no loop.
+- **`deploy-prod.yml`** ("Deploy Prod", manual only): asks for the confirmation word `PRODUCAO`, downloads the managed package from the latest successful UAT run (the same package that was tested) and imports it into Prod. If there is no such run, it repacks from `solutions/`.
 
-Troque `<NOME_DA_SOLUCAO>` pelo nome **único** da solução (ou crie a variável de repositório `PP_SOLUTION_NAME`).
+Set the repository variable `PP_SOLUTION_NAME` to the solution's **unique** name.
 
-## 1. Service principal (uma vez)
+## 1. Service principal (one time)
 
-**Opção A, com Azure CLI:**
+**Option A, with Azure CLI:**
 ```bash
 az login
 APP_ID=$(az ad app create --display-name "sp-powerplatform-github" --query appId -o tsv)
 az ad sp create --id "$APP_ID"
-az ad app credential reset --id "$APP_ID" --display-name "github-actions" --years 1 --query password -o tsv   # = PAC_CLIENT_SECRET (guarde!)
+az ad app credential reset --id "$APP_ID" --display-name "github-actions" --years 1 --query password -o tsv   # = PAC_CLIENT_SECRET (store it safely!)
 az account show --query tenantId -o tsv                                                                       # = PAC_TENANT_ID
 echo "$APP_ID"                                                                                                # = PAC_CLIENT_ID
 ```
 
-**Opção B, com pac (cria o app no Entra ID e o usuário de aplicativo no Dev de uma vez; mostra o Client Secret na tela):**
+**Option B, with pac (creates the Entra ID app and the Dev application user in one go; shows the client secret on screen):**
 ```bash
-pac auth create                      # login interativo com um admin
-pac admin create-service-principal --environment <URL_DEV>
+pac auth create                      # interactive sign-in with an admin
+pac admin create-service-principal --environment <DEV_URL>
 ```
 
-**Registrar como usuário de aplicativo em cada ambiente** (faça para Dev, UAT e Prod; na opção B o Dev já está feito). Você também pode fazer isso pelo Power Platform admin center → Ambiente → Configurações → Usuários + permissões → Usuários de aplicativo.
+**Register it as an application user in each environment** (Dev, UAT and Prod; with option B, Dev is already done). You can also do this in the Power Platform admin center → Environment → Settings → Users + permissions → Application users.
 ```bash
-pac admin assign-user --environment <URL_DEV>  --user <APP_ID> --role "System Administrator" --application-user
-pac admin assign-user --environment <URL_UAT>  --user <APP_ID> --role "System Administrator" --application-user
-pac admin assign-user --environment <URL_PROD> --user <APP_ID> --role "System Administrator" --application-user
+pac admin assign-user --environment <DEV_URL>  --user <APP_ID> --role "System Administrator" --application-user
+pac admin assign-user --environment <UAT_URL>  --user <APP_ID> --role "System Administrator" --application-user
+pac admin assign-user --environment <PROD_URL> --user <APP_ID> --role "System Administrator" --application-user
 ```
 
-## 2. GitHub: environments, secrets e variáveis
+## 2. GitHub: environments, secrets and variables
 
-Crie os environments `dev`, `uat` e `production`, cada um com os secrets `PAC_CLIENT_ID`, `PAC_CLIENT_SECRET` e `PAC_TENANT_ID`. Se for usar o mesmo SP em tudo, repita os mesmos valores.
+Create the environments `dev`, `uat` and `production` (Settings → Environments). To get an approval step before Prod, enable **Required reviewers** on `production`.
 
-As URLs dos ambientes não são sensíveis, então ficam em **variáveis de repositório**, não em secrets. Vá em **Settings → Secrets and variables → Actions → aba Variables → New repository variable** e crie:
+Go to **Settings → Secrets and variables → Actions** and create:
 
-| Variável | Valor |
-|---|---|
-| `PP_DEV_URL` | URL do ambiente Dev (ex.: `https://org-dev.crm2.dynamics.com`) |
-| `PP_UAT_URL` | URL do ambiente UAT |
-| `PP_PROD_URL` | URL do ambiente Prod |
-| `PP_SOLUTION_NAME` | nome único da solução |
+| Name | Type | Value |
+|---|---|---|
+| `PAC_CLIENT_SECRET` | **Secret** | client secret value of the app registration |
+| `PAC_CLIENT_ID` | Variable | Application (client) ID |
+| `PAC_TENANT_ID` | Variable | Directory (tenant) ID |
+| `PP_DEV_URL` | Variable | Dev environment URL (e.g. `https://org-dev.crm2.dynamics.com`) |
+| `PP_UAT_URL` | Variable | UAT environment URL |
+| `PP_PROD_URL` | Variable | Prod environment URL |
+| `PP_SOLUTION_NAME` | Variable | solution unique name |
+
+The workflows read `PAC_CLIENT_ID` and `PAC_TENANT_ID` from variables first and fall back to secrets with the same name. **Never store the client secret as a variable:** variable values are printed in plain text in the run logs, and the logs of a public repo are public.
+
 ```bash
 REPO=<OWNER>/<REPO>
-gh variable set PP_SOLUTION_NAME --repo $REPO --body "<NOME_DA_SOLUCAO>"
-
-for ENV in dev uat production; do
-  gh api --method PUT repos/$REPO/environments/$ENV
-  gh secret set PAC_CLIENT_ID     --repo $REPO --env $ENV --body "<APP_ID>"
-  gh secret set PAC_CLIENT_SECRET --repo $REPO --env $ENV   # cole o valor quando pedir (não fica no histórico)
-  gh secret set PAC_TENANT_ID     --repo $REPO --env $ENV --body "<TENANT_ID>"
-done
-gh variable set PP_DEV_URL  --repo $REPO --body "<URL_DEV>"
-gh variable set PP_UAT_URL  --repo $REPO --body "<URL_UAT>"
-gh variable set PP_PROD_URL --repo $REPO --body "<URL_PROD>"
+for ENV in dev uat production; do gh api --method PUT repos/$REPO/environments/$ENV; done
+gh secret set PAC_CLIENT_SECRET --repo $REPO   # paste the value when prompted (it is not saved in shell history)
+gh variable set PAC_CLIENT_ID    --repo $REPO --body "<APP_ID>"
+gh variable set PAC_TENANT_ID    --repo $REPO --body "<TENANT_ID>"
+gh variable set PP_DEV_URL       --repo $REPO --body "<DEV_URL>"
+gh variable set PP_UAT_URL       --repo $REPO --body "<UAT_URL>"
+gh variable set PP_PROD_URL      --repo $REPO --body "<PROD_URL>"
+gh variable set PP_SOLUTION_NAME --repo $REPO --body "<SOLUTION_NAME>"
 ```
 
-**Connection references:** as conexões precisam existir no ambiente de destino. Se a solução tiver connection references ou variáveis de ambiente, gere um settings file com `pac solution create-settings --solution-zip <zip> --settings-file <arquivo>.json` e passe `--settings-file` no `pac solution import`.
+**Connection references:** the connections must exist in the target environment. If the solution has connection references or environment variables, generate a settings file with `pac solution create-settings --solution-zip <zip> --settings-file <file>.json` and pass `--settings-file` to `pac solution import`.
 
-**Repo público:** os logs das execuções são públicos. Os secrets ficam mascarados, mas nunca dê `echo` em valores sensíveis.
+**Public repo:** run logs are public. Secrets are masked, but never `echo` sensitive values.
 
-## 3. Roteiro da demo (3 passos)
+## 3. Demo script (3 steps)
 
-1. **Push → UAT verde:** faça uma alteração na solução no Dev e um push (ou merge) no `main`. Mostre o "Dev para UAT" exportando, commitando em `solutions/` e importando no UAT.
-2. **Deploy Prod manual:** em Actions → "Deploy Prod" → *Run workflow*, digite `PRODUCAO`. Esse é o momento da aprovação.
-3. **Import concluído no Prod:** acompanhe o job e mostre o resumo ✅ e a solução, com a versão nova, em make.powerapps.com no Prod.
+1. **Push → green UAT:** make a change to the solution in Dev and push (or merge) to `main`. Show "Dev to UAT" exporting, committing to `solutions/` and importing into UAT.
+2. **Manual Prod deploy:** in Actions → "Deploy Prod" → *Run workflow*, type `PRODUCAO`. If Required reviewers is enabled on `production`, this is where the approval happens.
+3. **Import completed in Prod:** follow the job, then show the ✅ summary and the solution, with the new version, in make.powerapps.com in Prod.
 
-**Plano B:** rode tudo hoje à noite e, se a demo ao vivo falhar, mostre essas execuções já concluídas (logs, artefato `pacote-managed` e resumo).
+**Backup plan:** run everything ahead of time and, if the live demo fails, show the completed runs (logs, the `pacote-managed` artifact and the summary).

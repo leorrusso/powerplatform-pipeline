@@ -3,7 +3,7 @@ name: "Dev to UAT"
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
     inputs:
       change_description:
@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write   # to commit the exported solution to main
+  contents: write   # to commit the exported solution to dev
 
 concurrency:
   group: dev-para-uat
@@ -71,7 +71,7 @@ jobs:
             --folder "solutions/${SOLUTION_NAME}" \
             --packagetype Managed
 
-      - name: Commit to main
+      - name: Commit to dev
         # Commits made with GITHUB_TOKEN do not trigger new workflow runs, so there is no loop.
         env:
           CHANGE_DESCRIPTION: ${{ inputs.change_description }}
@@ -86,8 +86,8 @@ jobs:
               CHANGE_DESCRIPTION="Export ${SOLUTION_NAME} from Dev"
             fi
             git commit -m "$CHANGE_DESCRIPTION"
-            git pull --rebase origin main
-            git push origin HEAD:main
+            git pull --rebase origin dev
+            git push origin HEAD:dev
           fi
 
       - name: Upload managed package as artifact

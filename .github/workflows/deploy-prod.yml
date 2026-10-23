@@ -1,65 +1,44 @@
-# Manual Production deploy: imports into Prod the SAME managed package that passed in UAT.
+# Prod: on push to main (including a merged pull request), pack the managed solution
+# from solutions/<name> in this commit and import it into Prod.
+# The unpacked folder is the source a pull request merges. A managed zip uploaded by
+# another workflow is not this commit, and that artifact expires.
 name: "Deploy Prod"
 
 on:
-  workflow_dispatch:
-    inputs:
-      confirmacao:
-        description: "Type PRODUCAO to confirm the deployment"
-        required: true
-        type: string
+  push:
+    branches: [main]
 
 permissions:
   contents: read
-  actions: read   # to find and download the artifact from the latest "Dev to UAT" run
 
 env:
+  # Replace <NOME_DA_SOLUCAO> with the solution UNIQUE name (or create the PP_SOLUTION_NAME repository variable).
   SOLUTION_NAME: ${{ vars.PP_SOLUTION_NAME || '<NOME_DA_SOLUCAO>' }}
 
 jobs:
   importar-prod:
     name: "Import into Prod"
-    if: inputs.confirmacao == 'PRODUCAO'
     runs-on: ubuntu-latest
-    environment: production
+    environment: Prod
     env:
       PAC_CLIENT_ID: ${{ vars.PAC_CLIENT_ID || secrets.PAC_CLIENT_ID }}
       PAC_CLIENT_SECRET: ${{ secrets.PAC_CLIENT_SECRET }}
       PAC_TENANT_ID: ${{ vars.PAC_TENANT_ID || secrets.PAC_TENANT_ID }}
       PP_ENVIRONMENT_URL: ${{ vars.PP_PROD_URL }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-
-      - name: Find latest successful "Dev to UAT" run
-        id: uat
-        run: |
-          RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow dev-para-uat.yml \
-            --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "UAT run used: ${RUN_ID:-none (will repack from solutions/)}"
-
-      - name: Download managed package tested in UAT
-        if: steps.uat.outputs.run_id != ''
-        uses: actions/download-artifact@v8
-        with:
-          name: pacote-managed
-          path: pacote
-          run-id: ${{ steps.uat.outputs.run_id }}
-          github-token: ${{ github.token }}
 
       - name: Install Power Platform CLI (pac)
         uses: microsoft/powerplatform-actions/actions-install@v1
         with:
           add-tools-to-path: true
 
-      - name: Fallback - repack managed from solutions/
-        if: steps.uat.outputs.run_id == ''
+      - name: Pack managed solution from solutions/
         run: |
-          mkdir -p pacote
+          mkdir -p out
           pac solution pack \
-            --zipfile "pacote/${SOLUTION_NAME}_managed.zip" \
+            --zipfile "out/${SOLUTION_NAME}_managed.zip" \
             --folder "solutions/${SOLUTION_NAME}" \
             --packagetype Managed
 
@@ -74,15 +53,15 @@ jobs:
       - name: Import managed solution into Prod
         run: |
           pac solution import \
-            --path "pacote/${SOLUTION_NAME}_managed.zip" \
+            --path "out/${SOLUTION_NAME}_managed.zip" \
             --async --activate-plugins \
             --max-async-wait-time 60
 
-      - name: Job summary status
+      - name: Summary
         if: always()
         run: |
           if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ ${SOLUTION_NAME} successfully imported into Prod ($PP_ENVIRONMENT_URL). UAT run package: ${{ steps.uat.outputs.run_id || 'repacked from solutions/' }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ ${SOLUTION_NAME} imported into Prod ($PP_ENVIRONMENT_URL)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ Deployment of ${SOLUTION_NAME} to Prod failed. See the step logs above." >> "$GITHUB_STEP_SUMMARY"
           fi
